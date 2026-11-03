@@ -100,8 +100,18 @@ public:
                 current += character;
                 if (escaped) escaped = false;
                 else if (character == '\\') escaped = true;
-                else if (character == quote) quote = '\0';
+                else if (character == quote) {
+                    quote = '\0';
+                    if (i + 1 < input.size() && !isDelimiter(input[i + 1])) {
+                        result.push_back({current, typeOf_.get(current, false)});
+                        current.clear();
+                    }
+                }
             } else if (character == '\"' || character == '\'') {
+                if (!current.empty()) {
+                    result.push_back({current, typeOf_.get(current, false)});
+                    current.clear();
+                }
                 quote = character;
                 current += character;
             } else if (character == '-' && delimiter_ != '-' && current.empty() &&
@@ -163,6 +173,34 @@ const char* typeName(TokenType type) {
         case TokenType::InvalidNumber: return "error: multiple decimal points";
     }
     return "unknown";
+}
+
+// Parser view retains line breaks and continuation markers; token numbers remain unchanged.
+std::vector<Token> parserTokens(const std::vector<Token>& tokens) {
+    std::vector<Token> result;
+    for (const auto& token : tokens) {
+        if (token.type == TokenType::Empty) continue;
+        if (token.type == TokenType::Special && token.value.size() == 1 &&
+            token.value[0] != '\n' && token.value[0] != '\r' &&
+            std::isspace(static_cast<unsigned char>(token.value[0]))) continue;
+        result.push_back(token);
+    }
+    return result;
+}
+
+struct LexicalDiagnostic {
+    TokenType error;
+    std::string value;
+    std::optional<TokenPosition> position;
+};
+
+std::vector<LexicalDiagnostic> lexicalDiagnostics(const std::vector<Token>& tokens) {
+    std::vector<LexicalDiagnostic> result;
+    for (const auto& token : tokens) {
+        if (token.type == TokenType::UnclosedQuote || token.type == TokenType::InvalidNumber)
+            result.push_back({token.type, token.value, token.position});
+    }
+    return result;
 }
 
 // A continuation marker must be immediately followed by a line break.
@@ -274,9 +312,18 @@ int main() {
     for (const auto index : missingTerminators(tokens)) {
         std::cout << "error: missing instruction terminator at element index " << index << '\n';
     }
+    const auto adjacent = lexer.get("a\"hi\"b");
+    const auto errors = lexicalDiagnostics(lexer.get("x;\n1.2.3"));
+    const auto filtered = parserTokens(lexer.get("let a;\nb;"));
     const auto positions = lexer.get("a;\r\nb");
     const auto multiline = lexer.get("\"a\nb\";x");
-    if (multiline.size() != 3 ||
+    if (withoutPositions(adjacent) != std::vector<Token>{{"a", TokenType::Id}, {"\"hi\"", TokenType::TextLiteral}, {"b", TokenType::Id}} ||
+        errors.size() != 1 || errors[0].error != TokenType::InvalidNumber ||
+        errors[0].position != TokenPosition{4, 2, 1, 3} ||
+        filtered.size() != 6 || filtered[0].value != "let" || filtered[1].value != "a" ||
+        filtered[2].value != ";" || filtered[3].value != "\n" || filtered[4].value != "b" ||
+        filtered[0].position->tokenNumber != 1 || filtered[1].position->tokenNumber != 3 ||
+        multiline.size() != 3 ||
         multiline[0].position != TokenPosition{1, 1, 1, 0} ||
         multiline[1].position != TokenPosition{2, 2, 3, 5} ||
         multiline[2].position != TokenPosition{3, 2, 4, 6} ||
