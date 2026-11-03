@@ -167,6 +167,34 @@ std::vector<std::string> undeclaredIdentifiers(const std::vector<Token>& tokens)
     return errors;
 }
 
+// Preliminary instruction-ending check. Returns token indexes where the ending is missing.
+std::vector<std::size_t> missingTerminators(const std::vector<Token>& tokens, char terminator = ';') {
+    std::vector<std::size_t> errors;
+    bool active = false;
+    std::size_t last = 0;
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        const auto& token = tokens[i];
+        if (token.type == TokenType::Empty) continue;
+        if (token.type == TokenType::Special && token.value.size() == 1) {
+            const char c = token.value[0];
+            if (c == terminator) { active = false; continue; }
+            if (c == '\n' || c == '\r') {
+                if (active) { errors.push_back(i); active = false; }
+                continue;
+            }
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+        }
+        if (token.type == TokenType::Keyword && token.value == "let" && active) {
+            errors.push_back(i);
+            active = false;
+        }
+        active = true;
+        last = i;
+    }
+    if (active) errors.push_back(last + 1);
+    return errors;
+}
+
 int main() {
     const Lexer lexer(' ');
     const auto tokens = lexer.get("let a + b let d+b let c;");
@@ -185,7 +213,16 @@ int main() {
     for (const auto& name : undeclaredIdentifiers(tokens)) {
         std::cout << "error: undeclared identifier [" << name << "]\n";
     }
+    for (const auto index : missingTerminators(tokens)) {
+        std::cout << "error: missing instruction terminator before token " << index << '\n';
+    }
     if (tokens != expected ||
+        !missingTerminators(lexer.get("let a;\nlet b;")).empty() ||
+        missingTerminators(lexer.get("let a\nlet b;")).size() != 1 ||
+        missingTerminators(lexer.get("let a let b;")).size() != 1 ||
+        missingTerminators(lexer.get("let a")).size() != 1 ||
+        !missingTerminators(Lexer('|').get("let a|"), '|').empty() ||
+        !missingTerminators(lexer.get("\";\";")).empty() ||
         lexer.get("") != std::vector<Token>{{"", TokenType::Empty}} ||
         lexer.get("123") != std::vector<Token>{{"123", TokenType::NumberLiteral}} ||
         lexer.get("12.5") != std::vector<Token>{{"12.5", TokenType::NumberLiteral}} ||
