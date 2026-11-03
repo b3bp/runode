@@ -155,7 +155,7 @@ private:
     bool isDelimiter(char character) const {
         return character == delimiter_ ||
                std::isspace(static_cast<unsigned char>(character)) ||
-               std::string("+-*/=;(){}[],\\").find(character) != std::string::npos;
+               std::string("+-*/=;:(){}[],\\").find(character) != std::string::npos;
     }
     char delimiter_;
     TypeOf typeOf_;
@@ -217,6 +217,8 @@ std::vector<std::string> undeclaredIdentifiers(const std::vector<Token>& tokens)
     std::unordered_set<std::string> declared;
     std::vector<std::string> errors;
     bool awaitingName = false;
+    bool awaitingType = false;
+    const std::unordered_set<std::string> builtInTypes{"number", "string", "boolean"};
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
         if (isContinuation(tokens, i)) continue;
@@ -225,12 +227,19 @@ std::vector<std::string> undeclaredIdentifiers(const std::vector<Token>& tokens)
              std::isspace(static_cast<unsigned char>(token.value[0])))) continue;
         if (token.type == TokenType::Keyword && token.value == "let") {
             awaitingName = true;
+            awaitingType = false;
+        } else if (token.type == TokenType::Special && token.value == ":") {
+            awaitingName = false;
+            awaitingType = true;
         } else if (token.type == TokenType::Id) {
             if (awaitingName) declared.insert(token.value);
-            else if (!declared.contains(token.value)) errors.push_back(token.value);
+            else if (!(awaitingType && builtInTypes.contains(token.value)) &&
+                     !declared.contains(token.value)) errors.push_back(token.value);
             awaitingName = false;
+            awaitingType = false;
         } else {
             awaitingName = false;
+            awaitingType = false;
         }
     }
     return errors;
@@ -312,12 +321,32 @@ int main() {
     for (const auto index : missingTerminators(tokens)) {
         std::cout << "error: missing instruction terminator at element index " << index << '\n';
     }
+    const std::string tsSource = "let count: number = 2;\nlet total: number = count + 3;\nlet label: string = \"total\";";
+    const auto tsTokens = lexer.get(tsSource);
+    const auto tsFiltered = parserTokens(tsTokens);
+    const std::vector<Token> tsExpected = {
+        {"let", TokenType::Keyword}, {"count", TokenType::Id}, {":", TokenType::Special},
+        {"number", TokenType::Id}, {"=", TokenType::Special}, {"2", TokenType::NumberLiteral},
+        {";", TokenType::Special}, {"\n", TokenType::Special},
+        {"let", TokenType::Keyword}, {"total", TokenType::Id}, {":", TokenType::Special},
+        {"number", TokenType::Id}, {"=", TokenType::Special}, {"count", TokenType::Id},
+        {"+", TokenType::Special}, {"3", TokenType::NumberLiteral}, {";", TokenType::Special},
+        {"\n", TokenType::Special}, {"let", TokenType::Keyword}, {"label", TokenType::Id},
+        {":", TokenType::Special}, {"string", TokenType::Id}, {"=", TokenType::Special},
+        {"\"total\"", TokenType::TextLiteral}, {";", TokenType::Special}
+    };
+    std::cout << "TypeScript example:\n" << tsSource << '\n';
     const auto adjacent = lexer.get("a\"hi\"b");
     const auto errors = lexicalDiagnostics(lexer.get("x;\n1.2.3"));
     const auto filtered = parserTokens(lexer.get("let a;\nb;"));
     const auto positions = lexer.get("a;\r\nb");
     const auto multiline = lexer.get("\"a\nb\";x");
-    if (withoutPositions(adjacent) != std::vector<Token>{{"a", TokenType::Id}, {"\"hi\"", TokenType::TextLiteral}, {"b", TokenType::Id}} ||
+    if (withoutPositions(tsFiltered) != tsExpected ||
+        !lexicalDiagnostics(tsTokens).empty() ||
+        !undeclaredIdentifiers(tsTokens).empty() ||
+        !missingTerminators(tsTokens).empty() ||
+        tsFiltered[8].position->line != 2 || tsFiltered[18].position->line != 3 ||
+        withoutPositions(adjacent) != std::vector<Token>{{"a", TokenType::Id}, {"\"hi\"", TokenType::TextLiteral}, {"b", TokenType::Id}} ||
         errors.size() != 1 || errors[0].error != TokenType::InvalidNumber ||
         errors[0].position != TokenPosition{4, 2, 1, 3} ||
         filtered.size() != 6 || filtered[0].value != "let" || filtered[1].value != "a" ||
@@ -378,6 +407,7 @@ int main() {
         std::cerr << "Lexer test failed\n";
         return 1;
     }
+    std::cout << "TypeScript example tokenization and checks passed\n";
     std::cout << "Lexer tests passed\n";
     return 0;
 }
