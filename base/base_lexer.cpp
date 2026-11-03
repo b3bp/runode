@@ -6,7 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
-enum class TokenType { Keyword, Id, TextLiteral, NumberLiteral, Special, Empty, UnclosedQuote, InvalidNumber };
+enum class TokenType { Keyword, Id, TextLiteral, NumberLiteral, Special, Comment, TemplateLiteral, Empty, UnclosedQuote, UnclosedComment, UnclosedTemplate, InvalidNumber };
 
 enum class NumberForm { Integer, Fractional };
 enum class NumberSign { Positive, Negative, Zero };
@@ -94,6 +94,7 @@ public:
         std::string current;
         char quote = '\0';
         bool escaped = false;
+        std::vector<int> templateDepth;
         for (std::size_t i = 0; i < input.size(); ++i) {
             char character = input[i];
             if (quote != '\0') {
@@ -114,19 +115,67 @@ public:
                 }
                 quote = character;
                 current += character;
+            } else if (character == '`' || (character == '}' && !templateDepth.empty() && templateDepth.back() == 0)) {
+                if (!current.empty()) { result.push_back({current, typeOf_.get(current, false)}); current.clear(); }
+                const bool isHead = character == '`';
+                std::size_t end = i + 1;
+                bool escape = false, closed = false, interpolation = false;
+                while (end < input.size()) {
+                    const char c = input[end];
+                    if (escape) { escape = false; ++end; continue; }
+                    if (c == '\\') { escape = true; ++end; continue; }
+                    if (c == '`') { ++end; closed = true; break; }
+                    if (c == '$' && end + 1 < input.size() && input[end + 1] == '{') {
+                        end += 2; interpolation = true; break;
+                    }
+                    ++end;
+                }
+                result.push_back({input.substr(i, end - i),
+                    (closed || interpolation) ? TokenType::TemplateLiteral : TokenType::UnclosedTemplate});
+                if (isHead && interpolation) templateDepth.push_back(0);
+                else if (!isHead && !interpolation) templateDepth.pop_back();
+                i = end - 1;
+            } else if (character == '/' && i + 1 < input.size() && (input[i + 1] == '/' || input[i + 1] == '*')) {
+                if (!current.empty()) { result.push_back({current, typeOf_.get(current, false)}); current.clear(); }
+                const bool lineComment = input[i + 1] == '/';
+                std::size_t end = i + 2;
+                if (lineComment) {
+                    while (end < input.size() && input[end] != '\n' && input[end] != '\r') ++end;
+                    result.push_back({input.substr(i, end - i), TokenType::Comment});
+                } else {
+                    while (end + 1 < input.size() && !(input[end] == '*' && input[end + 1] == '/')) ++end;
+                    const bool closed = end + 1 < input.size();
+                    end = closed ? end + 2 : input.size();
+                    result.push_back({input.substr(i, end - i), closed ? TokenType::Comment : TokenType::UnclosedComment});
+                }
+                i = end - 1;
             } else if (character == '-' && delimiter_ != '-' && current.empty() &&
                        startsNumber(input, i + 1) && unaryPosition(input, i)) {
                 current += character;
+            } else if (character == '.' && (current.empty() ? (i + 1 < input.size() && std::isdigit(static_cast<unsigned char>(input[i + 1]))) :
+                       (std::isdigit(static_cast<unsigned char>(current[0])) || current[0] == '-'))) {
+                current += character;
+            } else if (character == '.' && input.size() == 1) {
+                current += character;
             } else if (isDelimiter(character)) {
+                if (!templateDepth.empty() && character == '{') ++templateDepth.back();
+                else if (!templateDepth.empty() && character == '}' && templateDepth.back() > 0) --templateDepth.back();
                 result.push_back({current, typeOf_.get(current, false)});
                 current.clear();
+                static const std::vector<std::string> multiOperators = {
+                    "===", "!==", "**=", "&&=", "||=", "?" "?=", "=>", "==", "!=", "++", "--", "**", ">=", "<=", "&&", "||", "??", "?.", "+=", "-=", "*=", "/="
+                };
                 std::string separator(1, character);
-                result.push_back({separator, typeOf_.get(separator, true)});
+                for (const auto& op : multiOperators) {
+                    if (input.compare(i, op.size(), op) == 0) { separator = op; i += op.size() - 1; break; }
+                }
+                result.push_back({separator, TokenType::Special});
             } else {
                 current += character;
             }
         }
         result.push_back({current, quote != '\0' ? TokenType::UnclosedQuote : typeOf_.get(current, false)});
+        if (!templateDepth.empty()) result.push_back({"", TokenType::UnclosedTemplate});
         std::size_t line = 1, column = 1, offset = 0, tokenNumber = 0;
         bool previousCR = false;
         for (auto& token : result) {
@@ -155,7 +204,7 @@ private:
     bool isDelimiter(char character) const {
         return character == delimiter_ ||
                std::isspace(static_cast<unsigned char>(character)) ||
-               std::string("+-*/=;:(){}[],\\").find(character) != std::string::npos;
+               std::string("+-*/=;:(){}[],\\?.<>!&|%^").find(character) != std::string::npos;
     }
     char delimiter_;
     TypeOf typeOf_;
@@ -168,6 +217,10 @@ const char* typeName(TokenType type) {
         case TokenType::TextLiteral: return "text-literal";
         case TokenType::NumberLiteral: return "number-literal";
         case TokenType::Special: return "special";
+        case TokenType::Comment: return "comment";
+        case TokenType::TemplateLiteral: return "template-literal";
+        case TokenType::UnclosedTemplate: return "error: unclosed template";
+        case TokenType::UnclosedComment: return "error: unclosed comment";
         case TokenType::Empty: return "empty";
         case TokenType::UnclosedQuote: return "error: unclosed quote";
         case TokenType::InvalidNumber: return "error: multiple decimal points";
@@ -179,7 +232,7 @@ const char* typeName(TokenType type) {
 std::vector<Token> parserTokens(const std::vector<Token>& tokens) {
     std::vector<Token> result;
     for (const auto& token : tokens) {
-        if (token.type == TokenType::Empty) continue;
+        if (token.type == TokenType::Empty || token.type == TokenType::Comment) continue;
         if (token.type == TokenType::Special && token.value.size() == 1 &&
             token.value[0] != '\n' && token.value[0] != '\r' &&
             std::isspace(static_cast<unsigned char>(token.value[0]))) continue;
@@ -197,7 +250,7 @@ struct LexicalDiagnostic {
 std::vector<LexicalDiagnostic> lexicalDiagnostics(const std::vector<Token>& tokens) {
     std::vector<LexicalDiagnostic> result;
     for (const auto& token : tokens) {
-        if (token.type == TokenType::UnclosedQuote || token.type == TokenType::InvalidNumber)
+        if (token.type == TokenType::UnclosedQuote || token.type == TokenType::UnclosedComment || token.type == TokenType::UnclosedTemplate || token.type == TokenType::InvalidNumber)
             result.push_back({token.type, token.value, token.position});
     }
     return result;
@@ -222,7 +275,7 @@ std::vector<std::string> undeclaredIdentifiers(const std::vector<Token>& tokens)
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
         if (isContinuation(tokens, i)) continue;
-        if (token.type == TokenType::Empty ||
+        if (token.type == TokenType::Empty || token.type == TokenType::Comment ||
             (token.type == TokenType::Special && token.value.size() == 1 &&
              std::isspace(static_cast<unsigned char>(token.value[0])))) continue;
         if (token.type == TokenType::Keyword && token.value == "let") {
@@ -254,7 +307,7 @@ std::vector<std::size_t> missingTerminators(const std::vector<Token>& tokens, ch
     bool continuedCR = false;
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
-        if (token.type == TokenType::Empty) continue;
+        if (token.type == TokenType::Empty || token.type == TokenType::Comment) continue;
         if (isContinuation(tokens, i)) { continuation = true; continue; }
         if (token.type == TokenType::Special && token.value.size() == 1) {
             const char c = token.value[0];
@@ -336,12 +389,19 @@ int main() {
         {"\"total\"", TokenType::TextLiteral}, {";", TokenType::Special}
     };
     std::cout << "TypeScript example:\n" << tsSource << '\n';
+    const auto templateTokens = parserTokens(lexer.get("`hello ${name}`"));
+    const auto commentTokens = lexer.get("let x; /* missing");
     const auto adjacent = lexer.get("a\"hi\"b");
     const auto errors = lexicalDiagnostics(lexer.get("x;\n1.2.3"));
     const auto filtered = parserTokens(lexer.get("let a;\nb;"));
     const auto positions = lexer.get("a;\r\nb");
     const auto multiline = lexer.get("\"a\nb\";x");
-    if (withoutPositions(tsFiltered) != tsExpected ||
+    if (withoutPositions(templateTokens) != std::vector<Token>{{"`hello ${", TokenType::TemplateLiteral}, {"name", TokenType::Id}, {"}`", TokenType::TemplateLiteral}} ||
+        lexicalDiagnostics(commentTokens).size() != 1 ||
+        lexicalDiagnostics(commentTokens)[0].error != TokenType::UnclosedComment ||
+        lexicalDiagnostics(lexer.get("`unfinished")).size() != 1 ||
+        lexicalDiagnostics(lexer.get("`unfinished"))[0].error != TokenType::UnclosedTemplate ||
+        withoutPositions(tsFiltered) != tsExpected ||
         !lexicalDiagnostics(tsTokens).empty() ||
         !undeclaredIdentifiers(tsTokens).empty() ||
         !missingTerminators(tsTokens).empty() ||

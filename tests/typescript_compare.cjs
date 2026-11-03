@@ -25,7 +25,19 @@ for (const [name, source] of examples) {
  if (parsed.parseDiagnostics.length) { invalid++; console.log(`INVALID ${name}: ${parsed.parseDiagnostics.map(d => d.code).join(',')}`); continue; }
  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, source);
  const ref = [];
- for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) ref.push(scanner.getTokenText());
+ let templateDepth = [];
+ for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+   if (kind === ts.SyntaxKind.GreaterThanToken) kind = scanner.reScanGreaterToken();
+   if (kind === ts.SyntaxKind.TemplateHead) templateDepth.push(0);
+   else if (kind === ts.SyntaxKind.OpenBraceToken && templateDepth.length) templateDepth[templateDepth.length - 1]++;
+   else if (kind === ts.SyntaxKind.CloseBraceToken && templateDepth.length) {
+     if (templateDepth[templateDepth.length - 1] === 0) {
+       kind = scanner.reScanTemplateToken(false);
+       if (kind === ts.SyntaxKind.TemplateTail) templateDepth.pop();
+     } else templateDepth[templateDepth.length - 1]--;
+   }
+   ref.push(scanner.getTokenText());
+ }
  const run = spawnSync('./tests/typescript_lex_probe', { input: source, encoding: 'utf8' });
  if (run.status !== 0) { console.log(`ERROR ${name}: ${run.stderr}`); failed++; continue; }
  const ours = run.stdout.trim().split('\n').filter(Boolean).map(x => Buffer.from(x, 'hex').toString('utf8'));
