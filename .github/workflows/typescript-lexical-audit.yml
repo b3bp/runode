@@ -1,0 +1,21 @@
+name: TypeScript lexical comparison
+on:
+  push:
+    branches: [experimental]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install reference TypeScript
+        run: npm install --no-save --no-package-lock typescript@5.9.3
+      - name: Build Clang C++23 probe
+        run: clang++ -std=c++23 -Wall -Wextra -Werror -pedantic tests/typescript_lex_probe.cpp -o tests/typescript_lex_probe
+      - name: Compare tokens and validate examples
+        run: node tests/typescript_compare.cjs
