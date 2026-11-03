@@ -6,7 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
-enum class TokenType { Keyword, Id, TextLiteral, NumberLiteral, Special, Empty };
+enum class TokenType { Keyword, Id, TextLiteral, NumberLiteral, Special, Empty, UnclosedQuote, InvalidNumber };
 
 enum class NumberForm { Integer, Fractional };
 enum class NumberSign { Positive, Negative, Zero };
@@ -42,6 +42,12 @@ public:
         if (isDelimiter) return TokenType::Special;
         if (isQuoted(value)) return TokenType::TextLiteral;
         if (keywords_.contains(value)) return TokenType::Keyword;
+        const std::size_t digitStart = value.front() == '-' ? 1 : 0;
+        if (digitStart < value.size() &&
+            ((value[digitStart] >= '0' && value[digitStart] <= '9') || value[digitStart] == '.') &&
+            std::all_of(value.begin() + digitStart, value.end(), [](char c) { return (c >= '0' && c <= '9') || c == '.'; }) &&
+            std::any_of(value.begin() + digitStart, value.end(), [](char c) { return c >= '0' && c <= '9'; }) &&
+            std::count(value.begin() + digitStart, value.end(), '.') > 1) return TokenType::InvalidNumber;
         std::size_t start = value.front() == '-' ? 1 : 0;
         bool hasDigit = false;
         bool hasDot = false;
@@ -101,7 +107,7 @@ public:
                 current += character;
             }
         }
-        result.push_back({current, typeOf_.get(current, false)});
+        result.push_back({current, quote != '\0' ? TokenType::UnclosedQuote : typeOf_.get(current, false)});
         return result;
     }
 
@@ -133,8 +139,32 @@ const char* typeName(TokenType type) {
         case TokenType::NumberLiteral: return "number-literal";
         case TokenType::Special: return "special";
         case TokenType::Empty: return "empty";
+        case TokenType::UnclosedQuote: return "error: unclosed quote";
+        case TokenType::InvalidNumber: return "error: multiple decimal points";
     }
     return "unknown";
+}
+
+// Preliminary sequential declaration check; scopes and forward declarations are not modeled.
+std::vector<std::string> undeclaredIdentifiers(const std::vector<Token>& tokens) {
+    std::unordered_set<std::string> declared;
+    std::vector<std::string> errors;
+    bool awaitingName = false;
+    for (const auto& token : tokens) {
+        if (token.type == TokenType::Empty ||
+            (token.type == TokenType::Special && token.value.size() == 1 &&
+             std::isspace(static_cast<unsigned char>(token.value[0])))) continue;
+        if (token.type == TokenType::Keyword && token.value == "let") {
+            awaitingName = true;
+        } else if (token.type == TokenType::Id) {
+            if (awaitingName) declared.insert(token.value);
+            else if (!declared.contains(token.value)) errors.push_back(token.value);
+            awaitingName = false;
+        } else {
+            awaitingName = false;
+        }
+    }
+    return errors;
 }
 
 int main() {
@@ -152,6 +182,9 @@ int main() {
     for (const auto& token : tokens) {
         std::cout << '[' << token.value << "] " << typeName(token.type) << '\n';
     }
+    for (const auto& name : undeclaredIdentifiers(tokens)) {
+        std::cout << "error: undeclared identifier [" << name << "]\n";
+    }
     if (tokens != expected ||
         lexer.get("") != std::vector<Token>{{"", TokenType::Empty}} ||
         lexer.get("123") != std::vector<Token>{{"123", TokenType::NumberLiteral}} ||
@@ -161,7 +194,11 @@ int main() {
         lexer.get("-12.5") != std::vector<Token>{{"-12.5", TokenType::NumberLiteral}} ||
         lexer.get("-.5") != std::vector<Token>{{"-.5", TokenType::NumberLiteral}} ||
         lexer.get(".") != std::vector<Token>{{".", TokenType::Id}} ||
-        lexer.get("1.2.3") != std::vector<Token>{{"1.2.3", TokenType::Id}} ||
+        lexer.get("1.2.3") != std::vector<Token>{{"1.2.3", TokenType::InvalidNumber}} ||
+        lexer.get("\"unterminated") != std::vector<Token>{{"\"unterminated", TokenType::UnclosedQuote}} ||
+        lexer.get("'unterminated") != std::vector<Token>{{"'unterminated", TokenType::UnclosedQuote}} ||
+        !undeclaredIdentifiers(lexer.get("let a; a")).empty() ||
+        undeclaredIdentifiers(lexer.get("a; let b; b")) != std::vector<std::string>{"a"} ||
         lexer.get("a-12") != std::vector<Token>{{"a", TokenType::Id}, {"-", TokenType::Special}, {"12", TokenType::NumberLiteral}} ||
         lexer.get("42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Positive} ||
         lexer.get("-42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Negative} ||
