@@ -1,10 +1,11 @@
+#include <algorithm>
 #include <cctype>
 #include <iostream>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
-enum class TokenType { Keyword, Id, Special, Empty };
+enum class TokenType { Keyword, TextId, NumberId, Special, Empty };
 
 struct Token {
     std::string value;
@@ -17,8 +18,11 @@ public:
     TokenType get(const std::string& value, bool isDelimiter) const {
         if (value.empty()) return TokenType::Empty;
         if (isDelimiter) return TokenType::Special;
+        if (value.find_first_of("\"'") != std::string::npos) return TokenType::TextId;
         if (keywords_.contains(value)) return TokenType::Keyword;
-        return TokenType::Id;
+        if (std::all_of(value.begin(), value.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            return TokenType::NumberId;
+        return TokenType::TextId;
     }
 
 private:
@@ -32,8 +36,18 @@ public:
     std::vector<Token> get(const std::string& input) const {
         std::vector<Token> result;
         std::string current;
+        char quote = '\0';
+        bool escaped = false;
         for (char character : input) {
-            if (isDelimiter(character)) {
+            if (quote != '\0') {
+                current += character;
+                if (escaped) escaped = false;
+                else if (character == '\\') escaped = true;
+                else if (character == quote) quote = '\0';
+            } else if (character == '\"' || character == '\'') {
+                quote = character;
+                current += character;
+            } else if (isDelimiter(character)) {
                 result.push_back({current, typeOf_.get(current, false)});
                 current.clear();
                 std::string separator(1, character);
@@ -59,7 +73,8 @@ private:
 const char* typeName(TokenType type) {
     switch (type) {
         case TokenType::Keyword: return "keyword";
-        case TokenType::Id: return "id";
+        case TokenType::TextId: return "text-id";
+        case TokenType::NumberId: return "number-id";
         case TokenType::Special: return "special";
         case TokenType::Empty: return "empty";
     }
@@ -70,21 +85,26 @@ int main() {
     const Lexer lexer(' ');
     const auto tokens = lexer.get("let a + b let d+b let c;");
     const std::vector<Token> expected = {
-        {"let", TokenType::Keyword}, {" ", TokenType::Special}, {"a", TokenType::Id},
+        {"let", TokenType::Keyword}, {" ", TokenType::Special}, {"a", TokenType::TextId},
         {" ", TokenType::Special}, {"", TokenType::Empty}, {"+", TokenType::Special},
-        {"", TokenType::Empty}, {" ", TokenType::Special}, {"b", TokenType::Id},
+        {"", TokenType::Empty}, {" ", TokenType::Special}, {"b", TokenType::TextId},
         {" ", TokenType::Special}, {"let", TokenType::Keyword}, {" ", TokenType::Special},
-        {"d", TokenType::Id}, {"+", TokenType::Special}, {"b", TokenType::Id},
+        {"d", TokenType::TextId}, {"+", TokenType::Special}, {"b", TokenType::TextId},
         {" ", TokenType::Special}, {"let", TokenType::Keyword}, {" ", TokenType::Special},
-        {"c", TokenType::Id}, {";", TokenType::Special}, {"", TokenType::Empty}
+        {"c", TokenType::TextId}, {";", TokenType::Special}, {"", TokenType::Empty}
     };
     for (const auto& token : tokens) {
         std::cout << '[' << token.value << "] " << typeName(token.type) << '\n';
     }
     if (tokens != expected ||
         lexer.get("") != std::vector<Token>{{"", TokenType::Empty}} ||
-        lexer.get("letx") != std::vector<Token>{{"letx", TokenType::Id}} ||
-        Lexer(':').get("a:b") != std::vector<Token>{{"a", TokenType::Id}, {":", TokenType::Special}, {"b", TokenType::Id}}) {
+        lexer.get("123") != std::vector<Token>{{"123", TokenType::NumberId}} ||
+        lexer.get("123abc") != std::vector<Token>{{"123abc", TokenType::TextId}} ||
+        lexer.get("\"123\"") != std::vector<Token>{{"\"123\"", TokenType::TextId}} ||
+        lexer.get("\"a + b\"") != std::vector<Token>{{"\"a + b\"", TokenType::TextId}} ||
+        lexer.get("'let'") != std::vector<Token>{{"'let'", TokenType::TextId}} ||
+        lexer.get("letx") != std::vector<Token>{{"letx", TokenType::TextId}} ||
+        Lexer(':').get("a:b") != std::vector<Token>{{"a", TokenType::TextId}, {":", TokenType::Special}, {"b", TokenType::TextId}}) {
         std::cerr << "Lexer test failed\n";
         return 1;
     }
