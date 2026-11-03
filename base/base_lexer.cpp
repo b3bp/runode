@@ -6,7 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
-enum class TokenType { Keyword, TextId, NumberId, Special, Empty };
+enum class TokenType { Keyword, Id, TextLiteral, NumberLiteral, Special, Empty };
 
 enum class NumberForm { Integer, Fractional };
 enum class NumberSign { Positive, Negative, Zero };
@@ -22,7 +22,7 @@ struct Token {
     TokenType type;
 
     std::optional<NumberCharacteristics> numberCharacteristics() const {
-        if (type != TokenType::NumberId) return std::nullopt;
+        if (type != TokenType::NumberLiteral) return std::nullopt;
         const NumberForm form = value.find('.') == std::string::npos
             ? NumberForm::Integer : NumberForm::Fractional;
         const bool zero = std::none_of(value.begin(), value.end(),
@@ -40,7 +40,7 @@ public:
     TokenType get(const std::string& value, bool isDelimiter) const {
         if (value.empty()) return TokenType::Empty;
         if (isDelimiter) return TokenType::Special;
-        if (value.find_first_of("\"'") != std::string::npos) return TokenType::TextId;
+        if (isQuoted(value)) return TokenType::TextLiteral;
         if (keywords_.contains(value)) return TokenType::Keyword;
         std::size_t start = value.front() == '-' ? 1 : 0;
         bool hasDigit = false;
@@ -52,11 +52,21 @@ public:
             else if (c == '.' && !hasDot) hasDot = true;
             else { number = false; break; }
         }
-        if (number && hasDigit) return TokenType::NumberId;
-        return TokenType::TextId;
+        if (number && hasDigit) return TokenType::NumberLiteral;
+        return TokenType::Id;
     }
 
 private:
+    static bool isQuoted(const std::string& value) {
+        if (value.size() < 2 || (value.front() != '\"' && value.front() != '\'')) return false;
+        bool escaped = false;
+        for (std::size_t i = 1; i < value.size(); ++i) {
+            if (escaped) escaped = false;
+            else if (value[i] == '\\') escaped = true;
+            else if (value[i] == value.front()) return i == value.size() - 1;
+        }
+        return false;
+    }
     const std::unordered_set<std::string> keywords_{"let"};
 };
 
@@ -118,8 +128,9 @@ private:
 const char* typeName(TokenType type) {
     switch (type) {
         case TokenType::Keyword: return "keyword";
-        case TokenType::TextId: return "text-id";
-        case TokenType::NumberId: return "number-id";
+        case TokenType::Id: return "id";
+        case TokenType::TextLiteral: return "text-literal";
+        case TokenType::NumberLiteral: return "number-literal";
         case TokenType::Special: return "special";
         case TokenType::Empty: return "empty";
     }
@@ -130,40 +141,43 @@ int main() {
     const Lexer lexer(' ');
     const auto tokens = lexer.get("let a + b let d+b let c;");
     const std::vector<Token> expected = {
-        {"let", TokenType::Keyword}, {" ", TokenType::Special}, {"a", TokenType::TextId},
+        {"let", TokenType::Keyword}, {" ", TokenType::Special}, {"a", TokenType::Id},
         {" ", TokenType::Special}, {"", TokenType::Empty}, {"+", TokenType::Special},
-        {"", TokenType::Empty}, {" ", TokenType::Special}, {"b", TokenType::TextId},
+        {"", TokenType::Empty}, {" ", TokenType::Special}, {"b", TokenType::Id},
         {" ", TokenType::Special}, {"let", TokenType::Keyword}, {" ", TokenType::Special},
-        {"d", TokenType::TextId}, {"+", TokenType::Special}, {"b", TokenType::TextId},
+        {"d", TokenType::Id}, {"+", TokenType::Special}, {"b", TokenType::Id},
         {" ", TokenType::Special}, {"let", TokenType::Keyword}, {" ", TokenType::Special},
-        {"c", TokenType::TextId}, {";", TokenType::Special}, {"", TokenType::Empty}
+        {"c", TokenType::Id}, {";", TokenType::Special}, {"", TokenType::Empty}
     };
     for (const auto& token : tokens) {
         std::cout << '[' << token.value << "] " << typeName(token.type) << '\n';
     }
     if (tokens != expected ||
         lexer.get("") != std::vector<Token>{{"", TokenType::Empty}} ||
-        lexer.get("123") != std::vector<Token>{{"123", TokenType::NumberId}} ||
-        lexer.get("12.5") != std::vector<Token>{{"12.5", TokenType::NumberId}} ||
-        lexer.get(".5") != std::vector<Token>{{".5", TokenType::NumberId}} ||
-        lexer.get("12.") != std::vector<Token>{{"12.", TokenType::NumberId}} ||
-        lexer.get("-12.5") != std::vector<Token>{{"-12.5", TokenType::NumberId}} ||
-        lexer.get("-.5") != std::vector<Token>{{"-.5", TokenType::NumberId}} ||
-        lexer.get(".") != std::vector<Token>{{".", TokenType::TextId}} ||
-        lexer.get("1.2.3") != std::vector<Token>{{"1.2.3", TokenType::TextId}} ||
-        lexer.get("a-12") != std::vector<Token>{{"a", TokenType::TextId}, {"-", TokenType::Special}, {"12", TokenType::NumberId}} ||
+        lexer.get("123") != std::vector<Token>{{"123", TokenType::NumberLiteral}} ||
+        lexer.get("12.5") != std::vector<Token>{{"12.5", TokenType::NumberLiteral}} ||
+        lexer.get(".5") != std::vector<Token>{{".5", TokenType::NumberLiteral}} ||
+        lexer.get("12.") != std::vector<Token>{{"12.", TokenType::NumberLiteral}} ||
+        lexer.get("-12.5") != std::vector<Token>{{"-12.5", TokenType::NumberLiteral}} ||
+        lexer.get("-.5") != std::vector<Token>{{"-.5", TokenType::NumberLiteral}} ||
+        lexer.get(".") != std::vector<Token>{{".", TokenType::Id}} ||
+        lexer.get("1.2.3") != std::vector<Token>{{"1.2.3", TokenType::Id}} ||
+        lexer.get("a-12") != std::vector<Token>{{"a", TokenType::Id}, {"-", TokenType::Special}, {"12", TokenType::NumberLiteral}} ||
         lexer.get("42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Positive} ||
         lexer.get("-42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Negative} ||
         lexer.get(".5").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Positive} ||
         lexer.get("-12.").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Negative} ||
         lexer.get("-0.0").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Zero} ||
         lexer.get("word").front().numberCharacteristics().has_value() ||
-        lexer.get("123abc") != std::vector<Token>{{"123abc", TokenType::TextId}} ||
-        lexer.get("\"123\"") != std::vector<Token>{{"\"123\"", TokenType::TextId}} ||
-        lexer.get("\"a + b\"") != std::vector<Token>{{"\"a + b\"", TokenType::TextId}} ||
-        lexer.get("'let'") != std::vector<Token>{{"'let'", TokenType::TextId}} ||
-        lexer.get("letx") != std::vector<Token>{{"letx", TokenType::TextId}} ||
-        Lexer(':').get("a:b") != std::vector<Token>{{"a", TokenType::TextId}, {":", TokenType::Special}, {"b", TokenType::TextId}}) {
+        lexer.get("123abc") != std::vector<Token>{{"123abc", TokenType::Id}} ||
+        lexer.get("\"123\"") != std::vector<Token>{{"\"123\"", TokenType::TextLiteral}} ||
+        lexer.get("\"a + b\"") != std::vector<Token>{{"\"a + b\"", TokenType::TextLiteral}} ||
+        lexer.get("'let'") != std::vector<Token>{{"'let'", TokenType::TextLiteral}} ||
+        lexer.get("let") != std::vector<Token>{{"let", TokenType::Keyword}} ||
+        lexer.get("name") != std::vector<Token>{{"name", TokenType::Id}} ||
+        lexer.get("\"123\"").front().numberCharacteristics().has_value() ||
+        lexer.get("letx") != std::vector<Token>{{"letx", TokenType::Id}} ||
+        Lexer(':').get("a:b") != std::vector<Token>{{"a", TokenType::Id}, {":", TokenType::Special}, {"b", TokenType::Id}}) {
         std::cerr << "Lexer test failed\n";
         return 1;
     }
