@@ -125,7 +125,7 @@ private:
     bool isDelimiter(char character) const {
         return character == delimiter_ ||
                std::isspace(static_cast<unsigned char>(character)) ||
-               std::string("+-*/=;(){}[],").find(character) != std::string::npos;
+               std::string("+-*/=;(){}[],\\").find(character) != std::string::npos;
     }
     char delimiter_;
     TypeOf typeOf_;
@@ -145,12 +145,23 @@ const char* typeName(TokenType type) {
     return "unknown";
 }
 
+// A continuation marker must be immediately followed by a line break.
+bool isContinuation(const std::vector<Token>& tokens, std::size_t index) {
+    if (tokens[index].type != TokenType::Special || tokens[index].value != "\\") return false;
+    ++index;
+    while (index < tokens.size() && tokens[index].type == TokenType::Empty) ++index;
+    return index < tokens.size() && tokens[index].type == TokenType::Special &&
+           (tokens[index].value == "\n" || tokens[index].value == "\r");
+}
+
 // Preliminary sequential declaration check; scopes and forward declarations are not modeled.
 std::vector<std::string> undeclaredIdentifiers(const std::vector<Token>& tokens) {
     std::unordered_set<std::string> declared;
     std::vector<std::string> errors;
     bool awaitingName = false;
-    for (const auto& token : tokens) {
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        const auto& token = tokens[i];
+        if (isContinuation(tokens, i)) continue;
         if (token.type == TokenType::Empty ||
             (token.type == TokenType::Special && token.value.size() == 1 &&
              std::isspace(static_cast<unsigned char>(token.value[0])))) continue;
@@ -172,16 +183,28 @@ std::vector<std::size_t> missingTerminators(const std::vector<Token>& tokens, ch
     std::vector<std::size_t> errors;
     bool active = false;
     std::size_t last = 0;
+    bool continuation = false;
+    bool continuedCR = false;
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
         if (token.type == TokenType::Empty) continue;
+        if (isContinuation(tokens, i)) { continuation = true; continue; }
         if (token.type == TokenType::Special && token.value.size() == 1) {
             const char c = token.value[0];
             if (c == terminator) { active = false; continue; }
             if (c == '\n' || c == '\r') {
-                if (active) { errors.push_back(i); active = false; }
+                if (continuation) {
+                    continuation = false;
+                    continuedCR = c == '\r';
+                } else if (c == '\n' && continuedCR) {
+                    continuedCR = false;
+                } else if (active) {
+                    errors.push_back(i);
+                    active = false;
+                }
                 continue;
             }
+            continuedCR = false;
             if (std::isspace(static_cast<unsigned char>(c))) continue;
         }
         if (token.type == TokenType::Keyword && token.value == "let" && active) {
@@ -218,6 +241,11 @@ int main() {
     }
     if (tokens != expected ||
         !missingTerminators(lexer.get("let a;\nlet b;")).empty() ||
+        !missingTerminators(lexer.get("let a = 1 + \\\n2;")).empty() ||
+        !missingTerminators(lexer.get("let a = 1 + \\\r\n2;")).empty() ||
+        missingTerminators(lexer.get("let a = 1 +\n2;")).empty() ||
+        missingTerminators(lexer.get("let a = 1 + \\")).empty() ||
+        !undeclaredIdentifiers(lexer.get("let \\\na;")).empty() ||
         missingTerminators(lexer.get("let a\nlet b;")).size() != 1 ||
         missingTerminators(lexer.get("let a let b;")).size() != 1 ||
         missingTerminators(lexer.get("let a")).size() != 1 ||
