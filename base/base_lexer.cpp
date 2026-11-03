@@ -1,15 +1,37 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 enum class TokenType { Keyword, TextId, NumberId, Special, Empty };
 
+enum class NumberForm { Integer, Fractional };
+enum class NumberSign { Positive, Negative, Zero };
+
+struct NumberCharacteristics {
+    NumberForm form;
+    NumberSign sign;
+    bool operator==(const NumberCharacteristics&) const = default;
+};
+
 struct Token {
     std::string value;
     TokenType type;
+
+    std::optional<NumberCharacteristics> numberCharacteristics() const {
+        if (type != TokenType::NumberId) return std::nullopt;
+        const NumberForm form = value.find('.') == std::string::npos
+            ? NumberForm::Integer : NumberForm::Fractional;
+        const bool zero = std::none_of(value.begin(), value.end(),
+            [](char c) { return c >= '1' && c <= '9'; });
+        const NumberSign sign = zero ? NumberSign::Zero
+            : (value.front() == '-' ? NumberSign::Negative : NumberSign::Positive);
+        return NumberCharacteristics{form, sign};
+    }
+
     bool operator==(const Token&) const = default;
 };
 
@@ -130,6 +152,12 @@ int main() {
         lexer.get(".") != std::vector<Token>{{".", TokenType::TextId}} ||
         lexer.get("1.2.3") != std::vector<Token>{{"1.2.3", TokenType::TextId}} ||
         lexer.get("a-12") != std::vector<Token>{{"a", TokenType::TextId}, {"-", TokenType::Special}, {"12", TokenType::NumberId}} ||
+        lexer.get("42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Positive} ||
+        lexer.get("-42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Negative} ||
+        lexer.get(".5").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Positive} ||
+        lexer.get("-12.").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Negative} ||
+        lexer.get("-0.0").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Zero} ||
+        lexer.get("word").front().numberCharacteristics().has_value() ||
         lexer.get("123abc") != std::vector<Token>{{"123abc", TokenType::TextId}} ||
         lexer.get("\"123\"") != std::vector<Token>{{"\"123\"", TokenType::TextId}} ||
         lexer.get("\"a + b\"") != std::vector<Token>{{"\"a + b\"", TokenType::TextId}} ||
