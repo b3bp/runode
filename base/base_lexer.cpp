@@ -1,25 +1,48 @@
 #include <cctype>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <vector>
+
+enum class TokenType { Keyword, Id, Special, Empty };
+
+struct Token {
+    std::string value;
+    TokenType type;
+    bool operator==(const Token&) const = default;
+};
+
+class TypeOf {
+public:
+    TokenType get(const std::string& value, bool isDelimiter) const {
+        if (value.empty()) return TokenType::Empty;
+        if (isDelimiter) return TokenType::Special;
+        if (keywords_.contains(value)) return TokenType::Keyword;
+        return TokenType::Id;
+    }
+
+private:
+    const std::unordered_set<std::string> keywords_{"let"};
+};
 
 class Lexer {
 public:
     explicit Lexer(char delimiter) : delimiter_(delimiter) {}
 
-    std::vector<std::string> get(const std::string& input) const {
-        std::vector<std::string> result;
+    std::vector<Token> get(const std::string& input) const {
+        std::vector<Token> result;
         std::string current;
         for (char character : input) {
             if (isDelimiter(character)) {
-                result.push_back(current);
+                result.push_back({current, typeOf_.get(current, false)});
                 current.clear();
-                result.emplace_back(1, character);
+                std::string separator(1, character);
+                result.push_back({separator, typeOf_.get(separator, true)});
             } else {
                 current += character;
             }
         }
-        result.push_back(current);
+        result.push_back({current, typeOf_.get(current, false)});
         return result;
     }
 
@@ -29,26 +52,39 @@ private:
                std::isspace(static_cast<unsigned char>(character)) ||
                std::string("+-*/=;(){}[],").find(character) != std::string::npos;
     }
-
     char delimiter_;
+    TypeOf typeOf_;
 };
+
+const char* typeName(TokenType type) {
+    switch (type) {
+        case TokenType::Keyword: return "keyword";
+        case TokenType::Id: return "id";
+        case TokenType::Special: return "special";
+        case TokenType::Empty: return "empty";
+    }
+    return "unknown";
+}
 
 int main() {
     const Lexer lexer(' ');
-    const std::string input = "let a + b let d+b let c;";
-    const std::vector<std::string> expected = {
-        "let", " ", "a", " ", "", "+", "", " ", "b", " ",
-        "let", " ", "d", "+", "b", " ", "let", " ", "c", ";", ""
+    const auto tokens = lexer.get("let a + b let d+b let c;");
+    const std::vector<Token> expected = {
+        {"let", TokenType::Keyword}, {" ", TokenType::Special}, {"a", TokenType::Id},
+        {" ", TokenType::Special}, {"", TokenType::Empty}, {"+", TokenType::Special},
+        {"", TokenType::Empty}, {" ", TokenType::Special}, {"b", TokenType::Id},
+        {" ", TokenType::Special}, {"let", TokenType::Keyword}, {" ", TokenType::Special},
+        {"d", TokenType::Id}, {"+", TokenType::Special}, {"b", TokenType::Id},
+        {" ", TokenType::Special}, {"let", TokenType::Keyword}, {" ", TokenType::Special},
+        {"c", TokenType::Id}, {";", TokenType::Special}, {"", TokenType::Empty}
     };
-    const auto tokens = lexer.get(input);
     for (const auto& token : tokens) {
-        std::cout << '[' << token << "]\n";
+        std::cout << '[' << token.value << "] " << typeName(token.type) << '\n';
     }
     if (tokens != expected ||
-        lexer.get(" a  b ") != std::vector<std::string>{"", " ", "a", " ", "", " ", "b", " ", ""} ||
-        lexer.get("") != std::vector<std::string>{""} ||
-        lexer.get("a\tb\nc") != std::vector<std::string>{"a", "\t", "b", "\n", "c"} ||
-        Lexer(':').get("a:b") != std::vector<std::string>{"a", ":", "b"}) {
+        lexer.get("") != std::vector<Token>{{"", TokenType::Empty}} ||
+        lexer.get("letx") != std::vector<Token>{{"letx", TokenType::Id}} ||
+        Lexer(':').get("a:b") != std::vector<Token>{{"a", TokenType::Id}, {":", TokenType::Special}, {"b", TokenType::Id}}) {
         std::cerr << "Lexer test failed\n";
         return 1;
     }
