@@ -17,9 +17,18 @@ struct NumberCharacteristics {
     bool operator==(const NumberCharacteristics&) const = default;
 };
 
+struct TokenPosition {
+    std::size_t tokenNumber;
+    std::size_t line;
+    std::size_t column;
+    std::size_t byteOffset;
+    bool operator==(const TokenPosition&) const = default;
+};
+
 struct Token {
     std::string value;
     TokenType type;
+    std::optional<TokenPosition> position = std::nullopt;
 
     std::optional<NumberCharacteristics> numberCharacteristics() const {
         if (type != TokenType::NumberLiteral) return std::nullopt;
@@ -108,6 +117,17 @@ public:
             }
         }
         result.push_back({current, quote != '\0' ? TokenType::UnclosedQuote : typeOf_.get(current, false)});
+        std::size_t line = 1, column = 1, offset = 0, tokenNumber = 0;
+        bool previousCR = false;
+        for (auto& token : result) {
+            if (!token.value.empty()) token.position = TokenPosition{++tokenNumber, line, column, offset};
+            for (char ch : token.value) {
+                ++offset;
+                if (ch == '\r') { ++line; column = 1; previousCR = true; }
+                else if (ch == '\n') { if (!previousCR) ++line; column = 1; previousCR = false; }
+                else { ++column; previousCR = false; }
+            }
+        }
         return result;
     }
 
@@ -218,9 +238,16 @@ std::vector<std::size_t> missingTerminators(const std::vector<Token>& tokens, ch
     return errors;
 }
 
+// Legacy test expectations compare token contents separately from source coordinates.
+std::vector<Token> withoutPositions(std::vector<Token> tokens) {
+    for (auto& token : tokens) token.position.reset();
+    return tokens;
+}
+
 int main() {
     const Lexer lexer(' ');
-    const auto tokens = lexer.get("let a + b let d+b let c;");
+    const auto positionedTokens = lexer.get("let a + b let d+b let c;");
+    const auto tokens = withoutPositions(positionedTokens);
     const std::vector<Token> expected = {
         {"let", TokenType::Keyword}, {" ", TokenType::Special}, {"a", TokenType::Id},
         {" ", TokenType::Special}, {"", TokenType::Empty}, {"+", TokenType::Special},
@@ -230,56 +257,77 @@ int main() {
         {" ", TokenType::Special}, {"let", TokenType::Keyword}, {" ", TokenType::Special},
         {"c", TokenType::Id}, {";", TokenType::Special}, {"", TokenType::Empty}
     };
-    for (const auto& token : tokens) {
-        std::cout << '[' << token.value << "] " << typeName(token.type) << '\n';
+    for (const auto& token : positionedTokens) {
+        std::cout << '[' << token.value << "] " << typeName(token.type);
+        if (token.position) {
+            std::cout << " token=" << token.position->tokenNumber
+                      << " line=" << token.position->line
+                      << " column=" << token.position->column;
+        } else {
+            std::cout << " (empty, no token number)";
+        }
+        std::cout << '\n';
     }
     for (const auto& name : undeclaredIdentifiers(tokens)) {
         std::cout << "error: undeclared identifier [" << name << "]\n";
     }
     for (const auto index : missingTerminators(tokens)) {
-        std::cout << "error: missing instruction terminator before token " << index << '\n';
+        std::cout << "error: missing instruction terminator at element index " << index << '\n';
     }
-    if (tokens != expected ||
-        !missingTerminators(lexer.get("let a;\nlet b;")).empty() ||
-        !missingTerminators(lexer.get("let a = 1 + \\\n2;")).empty() ||
-        !missingTerminators(lexer.get("let a = 1 + \\\r\n2;")).empty() ||
-        missingTerminators(lexer.get("let a = 1 +\n2;")).empty() ||
-        missingTerminators(lexer.get("let a = 1 + \\")).empty() ||
-        !undeclaredIdentifiers(lexer.get("let \\\na;")).empty() ||
-        missingTerminators(lexer.get("let a\nlet b;")).size() != 1 ||
-        missingTerminators(lexer.get("let a let b;")).size() != 1 ||
-        missingTerminators(lexer.get("let a")).size() != 1 ||
-        !missingTerminators(Lexer('|').get("let a|"), '|').empty() ||
-        !missingTerminators(lexer.get("\";\";")).empty() ||
-        lexer.get("") != std::vector<Token>{{"", TokenType::Empty}} ||
-        lexer.get("123") != std::vector<Token>{{"123", TokenType::NumberLiteral}} ||
-        lexer.get("12.5") != std::vector<Token>{{"12.5", TokenType::NumberLiteral}} ||
-        lexer.get(".5") != std::vector<Token>{{".5", TokenType::NumberLiteral}} ||
-        lexer.get("12.") != std::vector<Token>{{"12.", TokenType::NumberLiteral}} ||
-        lexer.get("-12.5") != std::vector<Token>{{"-12.5", TokenType::NumberLiteral}} ||
-        lexer.get("-.5") != std::vector<Token>{{"-.5", TokenType::NumberLiteral}} ||
-        lexer.get(".") != std::vector<Token>{{".", TokenType::Id}} ||
-        lexer.get("1.2.3") != std::vector<Token>{{"1.2.3", TokenType::InvalidNumber}} ||
-        lexer.get("\"unterminated") != std::vector<Token>{{"\"unterminated", TokenType::UnclosedQuote}} ||
-        lexer.get("'unterminated") != std::vector<Token>{{"'unterminated", TokenType::UnclosedQuote}} ||
-        !undeclaredIdentifiers(lexer.get("let a; a")).empty() ||
-        undeclaredIdentifiers(lexer.get("a; let b; b")) != std::vector<std::string>{"a"} ||
-        lexer.get("a-12") != std::vector<Token>{{"a", TokenType::Id}, {"-", TokenType::Special}, {"12", TokenType::NumberLiteral}} ||
-        lexer.get("42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Positive} ||
-        lexer.get("-42").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Negative} ||
-        lexer.get(".5").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Positive} ||
-        lexer.get("-12.").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Negative} ||
-        lexer.get("-0.0").front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Zero} ||
-        lexer.get("word").front().numberCharacteristics().has_value() ||
-        lexer.get("123abc") != std::vector<Token>{{"123abc", TokenType::Id}} ||
-        lexer.get("\"123\"") != std::vector<Token>{{"\"123\"", TokenType::TextLiteral}} ||
-        lexer.get("\"a + b\"") != std::vector<Token>{{"\"a + b\"", TokenType::TextLiteral}} ||
-        lexer.get("'let'") != std::vector<Token>{{"'let'", TokenType::TextLiteral}} ||
-        lexer.get("let") != std::vector<Token>{{"let", TokenType::Keyword}} ||
-        lexer.get("name") != std::vector<Token>{{"name", TokenType::Id}} ||
-        lexer.get("\"123\"").front().numberCharacteristics().has_value() ||
-        lexer.get("letx") != std::vector<Token>{{"letx", TokenType::Id}} ||
-        Lexer(':').get("a:b") != std::vector<Token>{{"a", TokenType::Id}, {":", TokenType::Special}, {"b", TokenType::Id}}) {
+    const auto positions = lexer.get("a;\r\nb");
+    const auto multiline = lexer.get("\"a\nb\";x");
+    if (multiline.size() != 3 ||
+        multiline[0].position != TokenPosition{1, 1, 1, 0} ||
+        multiline[1].position != TokenPosition{2, 2, 3, 5} ||
+        multiline[2].position != TokenPosition{3, 2, 4, 6} ||
+        positions.size() != 7 ||
+        positions[0].position != TokenPosition{1, 1, 1, 0} ||
+        positions[1].position != TokenPosition{2, 1, 2, 1} ||
+        positions[2].position.has_value() ||
+        positions[3].position != TokenPosition{3, 1, 3, 2} ||
+        positions[5].position != TokenPosition{4, 2, 1, 3} ||
+        positions[6].position != TokenPosition{5, 2, 1, 4} ||
+        tokens != expected ||
+        !missingTerminators(withoutPositions(lexer.get("let a;\nlet b;"))).empty() ||
+        !missingTerminators(withoutPositions(lexer.get("let a = 1 + \\\n2;"))).empty() ||
+        !missingTerminators(withoutPositions(lexer.get("let a = 1 + \\\r\n2;"))).empty() ||
+        missingTerminators(withoutPositions(lexer.get("let a = 1 +\n2;"))).empty() ||
+        missingTerminators(withoutPositions(lexer.get("let a = 1 + \\"))).empty() ||
+        !undeclaredIdentifiers(withoutPositions(lexer.get("let \\\na;"))).empty() ||
+        missingTerminators(withoutPositions(lexer.get("let a\nlet b;"))).size() != 1 ||
+        missingTerminators(withoutPositions(lexer.get("let a let b;"))).size() != 1 ||
+        missingTerminators(withoutPositions(lexer.get("let a"))).size() != 1 ||
+        !missingTerminators(withoutPositions(Lexer('|').get("let a|")), '|').empty() ||
+        !missingTerminators(withoutPositions(lexer.get("\";\";"))).empty() ||
+        withoutPositions(lexer.get("")) != std::vector<Token>{{"", TokenType::Empty}} ||
+        withoutPositions(lexer.get("123")) != std::vector<Token>{{"123", TokenType::NumberLiteral}} ||
+        withoutPositions(lexer.get("12.5")) != std::vector<Token>{{"12.5", TokenType::NumberLiteral}} ||
+        withoutPositions(lexer.get(".5")) != std::vector<Token>{{".5", TokenType::NumberLiteral}} ||
+        withoutPositions(lexer.get("12.")) != std::vector<Token>{{"12.", TokenType::NumberLiteral}} ||
+        withoutPositions(lexer.get("-12.5")) != std::vector<Token>{{"-12.5", TokenType::NumberLiteral}} ||
+        withoutPositions(lexer.get("-.5")) != std::vector<Token>{{"-.5", TokenType::NumberLiteral}} ||
+        withoutPositions(lexer.get(".")) != std::vector<Token>{{".", TokenType::Id}} ||
+        withoutPositions(lexer.get("1.2.3")) != std::vector<Token>{{"1.2.3", TokenType::InvalidNumber}} ||
+        withoutPositions(lexer.get("\"unterminated")) != std::vector<Token>{{"\"unterminated", TokenType::UnclosedQuote}} ||
+        withoutPositions(lexer.get("'unterminated")) != std::vector<Token>{{"'unterminated", TokenType::UnclosedQuote}} ||
+        !undeclaredIdentifiers(withoutPositions(lexer.get("let a; a"))).empty() ||
+        undeclaredIdentifiers(withoutPositions(lexer.get("a; let b; b"))) != std::vector<std::string>{"a"} ||
+        withoutPositions(lexer.get("a-12")) != std::vector<Token>{{"a", TokenType::Id}, {"-", TokenType::Special}, {"12", TokenType::NumberLiteral}} ||
+        withoutPositions(lexer.get("42")).front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Positive} ||
+        withoutPositions(lexer.get("-42")).front().numberCharacteristics() != NumberCharacteristics{NumberForm::Integer, NumberSign::Negative} ||
+        withoutPositions(lexer.get(".5")).front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Positive} ||
+        withoutPositions(lexer.get("-12.")).front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Negative} ||
+        withoutPositions(lexer.get("-0.0")).front().numberCharacteristics() != NumberCharacteristics{NumberForm::Fractional, NumberSign::Zero} ||
+        withoutPositions(lexer.get("word")).front().numberCharacteristics().has_value() ||
+        withoutPositions(lexer.get("123abc")) != std::vector<Token>{{"123abc", TokenType::Id}} ||
+        withoutPositions(lexer.get("\"123\"")) != std::vector<Token>{{"\"123\"", TokenType::TextLiteral}} ||
+        withoutPositions(lexer.get("\"a + b\"")) != std::vector<Token>{{"\"a + b\"", TokenType::TextLiteral}} ||
+        withoutPositions(lexer.get("'let'")) != std::vector<Token>{{"'let'", TokenType::TextLiteral}} ||
+        withoutPositions(lexer.get("let")) != std::vector<Token>{{"let", TokenType::Keyword}} ||
+        withoutPositions(lexer.get("name")) != std::vector<Token>{{"name", TokenType::Id}} ||
+        withoutPositions(lexer.get("\"123\"")).front().numberCharacteristics().has_value() ||
+        withoutPositions(lexer.get("letx")) != std::vector<Token>{{"letx", TokenType::Id}} ||
+        withoutPositions(Lexer(':').get("a:b")) != std::vector<Token>{{"a", TokenType::Id}, {":", TokenType::Special}, {"b", TokenType::Id}}) {
         std::cerr << "Lexer test failed\n";
         return 1;
     }
